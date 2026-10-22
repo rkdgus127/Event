@@ -1,0 +1,11 @@
+name: kotlin
+version: '523'
+main: rkdgus.Kotlin
+api-version: '1.21'
+authors: [ rkdgus ]
+description: kotlin
+commands:
+  event:
+    description: Event 패키지의 이벤트를 시작하거나 중지합니다.
+    usage: /<command> <start|stop|info> <이벤트 클래스명>
+    permission: op

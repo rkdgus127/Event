@@ -28,7 +28,7 @@ import rkdgus.Kotlin
 import rkdgus.Listener.craftBukkit
 
 @info(description = "무작위 금지 행동을 선택하고, 해당 행동이 발생하면 번개와 위더 및 연쇄 폭발을 일으킵니다.")
-class Death : craftBukkit(),Runnable {
+class Ban : craftBukkit(),Runnable {
 
     internal lateinit var bukkitTask: BukkitTask
 

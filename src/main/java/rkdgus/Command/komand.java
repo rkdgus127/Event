@@ -23,7 +23,7 @@ public class komand implements CommandExecutor, TabCompleter {
         if (args.length != 2 || (!args[0].equalsIgnoreCase("start")
                 && !args[0].equalsIgnoreCase("stop")
                 && !args[0].equalsIgnoreCase("info"))) {
-            sender.sendMessage("사용법: /event <start|stop|info> <이벤트 클래스명>");
+            sender.sendMessage("사용법: /event <start|stop|info> <이벤트 클래스명|패키지명>");
             return true;
         }
 
@@ -94,8 +94,8 @@ public class komand implements CommandExecutor, TabCompleter {
         boolean stopping = args[0].equalsIgnoreCase("stop");
         String prefix = args[1].toLowerCase(Locale.ROOT);
         List<String> candidates = stopping
-                ? eventLoader.getActiveEventNames()
-                : eventLoader.getEventNames();
+                ? eventLoader.getActiveTabCompletionEventNames()
+                : eventLoader.getTabCompletionEventNames();
         return candidates.stream()
                 .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(prefix))
                 .toList();

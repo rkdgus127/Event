@@ -70,7 +70,7 @@ tasks.build {
 }
 
 tasks.runServer {
-    minecraftVersion("1.21.11")
+    minecraftVersion("1.26.2")
 }
 kotlin {
     jvmToolchain(21)

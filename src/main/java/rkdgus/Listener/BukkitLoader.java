@@ -30,6 +30,7 @@ public class BukkitLoader {
 
     private final Plugin plugin;
     private final Map<String, Class<? extends craftBukkit>> eventClasses = new TreeMap<>();
+    private final Map<String, List<Class<? extends craftBukkit>>> packageClasses = new TreeMap<>();
     private final Map<String, Object> activeEvents = new HashMap<>();
     private final Map<String, BukkitTask> activeTasks = new HashMap<>();
 
@@ -44,7 +45,38 @@ public class BukkitLoader {
     }
 
     public List<String> getEventNames() {
-        return List.copyOf(eventClasses.keySet());
+        List<String> names = new java.util.ArrayList<>(eventClasses.keySet());
+        packageClasses.keySet().stream()
+                .map(BukkitLoader::getPackageAlias)
+                .forEach(names::add);
+        return names.stream().distinct().sorted().toList();
+    }
+
+    public List<String> getTabCompletionEventNames() {
+        List<String> names = eventClasses.values().stream()
+                .filter(eventClass -> eventClass.getPackageName().equals(EVENT_PACKAGE))
+                .map(Class::getSimpleName)
+                .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
+        packageClasses.keySet().stream()
+                .map(BukkitLoader::getPackageAlias)
+                .forEach(names::add);
+        return names.stream().distinct().sorted().toList();
+    }
+
+    public List<String> getActiveTabCompletionEventNames() {
+        List<String> names = activeEvents.keySet().stream()
+                .filter(name -> {
+                    Class<? extends craftBukkit> eventClass = eventClasses.get(name);
+                    return eventClass != null && eventClass.getPackageName().equals(EVENT_PACKAGE);
+                })
+                .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
+        packageClasses.entrySet().stream()
+                .filter(entry -> entry.getValue().stream()
+                        .anyMatch(eventClass -> activeEvents.containsKey(eventClass.getSimpleName())))
+                .map(Map.Entry::getKey)
+                .map(BukkitLoader::getPackageAlias)
+                .forEach(names::add);
+        return names.stream().distinct().sorted().toList();
     }
 
     public String getEventDescription(String requestedName) {
@@ -66,12 +98,40 @@ public class BukkitLoader {
                 .filter(name -> name.equalsIgnoreCase(requestedName))
                 .findFirst()
                 .orElse(null);
-
-        if (eventName == null || activeEvents.containsKey(eventName)) {
+        List<Class<? extends craftBukkit>> selectedClasses = eventName == null
+                ? findPackageClasses(requestedName)
+                : List.of(eventClasses.get(eventName));
+        if (selectedClasses.isEmpty()) {
             return false;
         }
 
-        Class<? extends craftBukkit> eventClass = eventClasses.get(eventName);
+        List<String> startedNames = new java.util.ArrayList<>();
+        try {
+            for (Class<? extends craftBukkit> eventClass : selectedClasses) {
+                String className = eventClass.getSimpleName();
+                if (!activeEvents.containsKey(className) && startSingleEvent(className, eventClass)) {
+                    startedNames.add(className);
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException exception) {
+            for (String startedName : startedNames) {
+                try {
+                    stopSingleEvent(startedName);
+                } catch (ReflectiveOperationException | RuntimeException cleanupException) {
+                    exception.addSuppressed(cleanupException);
+                }
+            }
+            throw exception;
+        }
+        return !startedNames.isEmpty();
+    }
+
+    private boolean startSingleEvent(String eventName, Class<? extends craftBukkit> eventClass)
+            throws ReflectiveOperationException {
+        if (activeEvents.containsKey(eventName)) {
+            return false;
+        }
+
         Object instance = eventClass.getDeclaredConstructor().newInstance();
         Listener listener = instance instanceof Listener value ? value : null;
         BukkitTask task = null;
@@ -114,10 +174,48 @@ public class BukkitLoader {
                 .filter(name -> name.equalsIgnoreCase(requestedName))
                 .findFirst()
                 .orElse(null);
-        if (eventName == null) {
+        List<String> selectedNames = eventName == null
+                ? findPackageClasses(requestedName).stream()
+                        .map(Class::getSimpleName)
+                        .filter(activeEvents::containsKey)
+                        .toList()
+                : List.of(eventName);
+        if (selectedNames.isEmpty()) {
             return false;
         }
 
+        ReflectiveOperationException reflectionFailure = null;
+        RuntimeException runtimeFailure = null;
+        for (String selectedName : selectedNames) {
+            try {
+                stopSingleEvent(selectedName);
+            } catch (ReflectiveOperationException exception) {
+                if (reflectionFailure == null) {
+                    reflectionFailure = exception;
+                } else {
+                    reflectionFailure.addSuppressed(exception);
+                }
+            } catch (RuntimeException exception) {
+                if (runtimeFailure == null) {
+                    runtimeFailure = exception;
+                } else {
+                    runtimeFailure.addSuppressed(exception);
+                }
+            }
+        }
+        if (runtimeFailure != null) {
+            if (reflectionFailure != null) {
+                runtimeFailure.addSuppressed(reflectionFailure);
+            }
+            throw runtimeFailure;
+        }
+        if (reflectionFailure != null) {
+            throw reflectionFailure;
+        }
+        return true;
+    }
+
+    private void stopSingleEvent(String eventName) throws ReflectiveOperationException {
         Object instance = activeEvents.get(eventName);
         try {
             try {
@@ -139,7 +237,6 @@ public class BukkitLoader {
         }
 
         plugin.getLogger().info("이벤트 종료 : " + eventName);
-        return true;
     }
 
     private void discoverEvents() {
@@ -148,7 +245,7 @@ public class BukkitLoader {
             Path path = Path.of(codeLocation.toURI());
 
             if (Files.isDirectory(path)) {
-                discoverFromDirectory(path.resolve("rkdgus").resolve("Event"));
+                discoverFromDirectory(path.resolve(EVENT_PATH));
             } else {
                 discoverFromJar(path.toFile());
             }
@@ -162,11 +259,15 @@ public class BukkitLoader {
             return;
         }
 
-        try (var files = Files.list(eventDirectory)) {
-            files.filter(path -> path.getFileName().toString().endsWith(".class"))
-                    .map(path -> path.getFileName().toString())
-                    .filter(name -> !name.contains("$"))
-                    .map(name -> EVENT_PACKAGE + "." + name.substring(0, name.length() - 6))
+        try (var files = Files.walk(eventDirectory)) {
+            files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".class"))
+                    .filter(path -> !path.getFileName().toString().contains("$"))
+                    .map(eventDirectory::relativize)
+                    .map(Path::toString)
+                    .map(relativePath -> EVENT_PACKAGE + "."
+                            + relativePath.substring(0, relativePath.length() - 6)
+                                    .replace(File.separatorChar, '.'))
                     .forEach(this::registerEventClass);
         }
     }
@@ -178,7 +279,6 @@ public class BukkitLoader {
                 String name = entries.nextElement().getName();
                 if (name.startsWith(EVENT_PATH)
                         && name.endsWith(".class")
-                        && name.indexOf('/', EVENT_PATH.length()) == -1
                         && !name.contains("$")) {
                     registerEventClass(name.substring(0, name.length() - 6).replace('/', '.'));
                 }
@@ -198,11 +298,26 @@ public class BukkitLoader {
                     && !Modifier.isAbstract(candidate.getModifiers())) {
                 @SuppressWarnings("unchecked")
                 Class<? extends craftBukkit> eventClass = (Class<? extends craftBukkit>) candidate;
-                eventClasses.put(candidate.getSimpleName(), eventClass);
+                eventClasses.putIfAbsent(candidate.getSimpleName(), eventClass);
+                packageClasses.computeIfAbsent(candidate.getPackageName(), ignored -> new java.util.ArrayList<>())
+                        .add(eventClass);
             }
         } catch (ClassNotFoundException | LinkageError exception) {
             plugin.getLogger().warning("이벤트 클래스 검색 실패 : " + className + " (" + exception.getMessage() + ")");
         }
+    }
+
+    private List<Class<? extends craftBukkit>> findPackageClasses(String requestedName) {
+        return packageClasses.entrySet().stream()
+                .filter(entry -> entry.getKey().equalsIgnoreCase(requestedName)
+                        || getPackageAlias(entry.getKey()).equalsIgnoreCase(requestedName))
+                .map(Map.Entry::getValue)
+                .findFirst()
+                .orElse(List.of());
+    }
+
+    private static String getPackageAlias(String packageName) {
+        return packageName.substring(packageName.lastIndexOf('.') + 1);
     }
 
     private void setTaskField(Class<?> eventClass, Object instance, BukkitTask task)
